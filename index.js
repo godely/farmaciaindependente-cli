@@ -46,7 +46,7 @@ export function parseCards(html) {
     return {sku:card.attr('data-produto_id'), name:card.find('[data-target="nome_produto"]').text().trim(),productUrl:site+link};
   }).get();
 }
-async function search(query, page=1, limit=20, verify) {
+async function search(query, page=1, limit=20, verify, verifyEarlier=false) {
   if (!Number.isInteger(page) || page<1 || !Number.isInteger(limit) || limit<1 || limit>50) throw new Error('Invalid page or limit');
   const term=query.trim().replace(/\s+/g,'-');
   const {html,post}=await session('/pesquisa/'+encodeURIComponent(term));
@@ -56,7 +56,8 @@ async function search(query, page=1, limit=20, verify) {
   const totalText = load(html)('#quantidade-busca').text().replace(/[^0-9]/g,'');
   const total = totalText ? Number(totalText) : null;
   const offset = (page - 1) * limit;
-  if (!Number.isSafeInteger(offset) || (total !== null && offset >= total)) return [];
+  // A verification callback also tracks whether earlier pages contained a direct match.
+  if (!Number.isSafeInteger(offset) || (!verifyEarlier && total !== null && offset >= total)) return [];
   let upstreamPage = verify ? 1 : Math.floor(offset / pageSize) + 1;
   let skip = verify ? offset : offset % pageSize;
   const cards = [];
@@ -160,7 +161,7 @@ async function searchVerified(intent,page,limit) {
     const match=verifiedRow(card,intent);
     if (match) found=true;
     return match;
-  });
+  }, intent.kind === 'ingredient');
   if (found || intent.kind !== 'ingredient') return direct;
 
   const references=new Map(), visitedTerms=new Set(), matches=new Map();
