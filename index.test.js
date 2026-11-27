@@ -38,3 +38,12 @@ test('a name-only branded pack requires a matching validated barcode before inhe
   assert.equal(verifyBarcode({...local,gtin:'7896676406184'},refs,intent),undefined);
   assert.equal(verifyBarcode(local,refs,{...intent,suffix:'30mg'}),undefined);
 });
+
+test('an exhausted ingredient page cannot start a different barcode search', async t=>{
+  t.mock.method(globalThis,'fetch',async (url,init)=>{
+    const path=new URL(url).pathname;
+    if(path==='/pesquisa/paracetamol') return new Response('<b id="quantidade-busca">1</b><div id="search-produtos"><div class="produto" data-produto_id="123"><a href="/local"></a><span data-target="nome_produto">Paracetamol 500mg</span></div></div>');
+    throw Error('unexpected '+path);
+  });
+  assert.deepEqual(await retailer.search('paracetamol',2,10),[]);
+});
