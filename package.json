@@ -1,0 +1,22 @@
+{
+  "name": "farmaciaindependente-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "farmaciaindependente": "./cli.js"
+  },
+  "exports": {
+    ".": "./index.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "cheerio": "1.0.0",
+    "paguemenos-cli": "https://codeload.github.com/godely/paguemenos-cli/tar.gz/492fa70520ec429a96e00742e5673b68304477a2"
+  }
+}
