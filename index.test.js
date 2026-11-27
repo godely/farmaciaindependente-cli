@@ -27,3 +27,14 @@ test('client page sizes span the retailer pages and stop at the reported end', a
   assert.deepEqual(await retailer.search('produto',4,2),[]);
   assert.deepEqual(queried,['2','2']);
 });
+
+test('a name-only branded pack requires a matching validated barcode before inheriting an ingredient', async()=>{
+  const {verifyBarcode}=await import('./index.js');
+  const ref={sku:'other',activeIngredients:['Sulfato de Morfina']};
+  const refs=new Map([['7896676406177',ref]]);
+  const local={sku:'local',name:'Dimorf 10mg',gtin:'7896676406177'};
+  const intent={kind:'ingredient',name:'morfina',suffix:'10mg'};
+  assert.equal(verifyBarcode(local,refs,intent).sku,'local');
+  assert.equal(verifyBarcode({...local,gtin:'7896676406184'},refs,intent),undefined);
+  assert.equal(verifyBarcode(local,refs,{...intent,suffix:'30mg'}),undefined);
+});
