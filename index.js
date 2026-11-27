@@ -48,15 +48,33 @@ async function search(query, page=1, limit=20) {
   if (!Number.isInteger(page) || page<1 || !Number.isInteger(limit) || limit<1 || limit>50) throw new Error('Invalid page or limit');
   const term=query.trim().replace(/\s+/g,'-');
   const {html,post}=await session('/pesquisa/'+encodeURIComponent(term));
-  let cards;
-  if (page === 1) cards=parseCards(html);
-  else {
-    const next=await post('/pesquisa/pesquisar',{termo:'pesquisa/'+term,pagina:String(page),ordenacao:'',is_termo:'true'});
-    if (!Array.isArray(next.produtos)) throw new Error('Search page unavailable');
-    cards=next.produtos.map(p=>p._source).filter(p=>/^[\w%-]+$/.test(p.url_produto)).map(p=>({
-      sku:String(p.cd_produto),name:p.nm_produto,productUrl:site+'/'+p.url_produto }));
+  const first = parseCards(html);
+  const pageSize = first.length;
+  if (!pageSize) return [];
+  const totalText = load(html)('#quantidade-busca').text().replace(/[^0-9]/g,'');
+  const total = totalText ? Number(totalText) : null;
+  const offset = (page - 1) * limit;
+  if (!Number.isSafeInteger(offset) || (total !== null && offset >= total)) return [];
+  let upstreamPage = Math.floor(offset / pageSize) + 1;
+  let skip = offset % pageSize;
+  const cards = [];
+  while (cards.length < limit) {
+    let batch = first;
+    if (upstreamPage > 1) {
+      const next = await post('/pesquisa/pesquisar', {
+        termo: 'pesquisa/' + term, pagina: String(upstreamPage), ordenacao: '', is_termo: 'true',
+      });
+      if (!Array.isArray(next.produtos)) throw new Error('Search page unavailable');
+      if (next.pagina_atual != null && Number(next.pagina_atual) !== upstreamPage) break;
+      batch = next.produtos.map(p=>p._source).filter(p=>/^[\w%-]+$/.test(p.url_produto)).map(p=>({
+        sku: String(p.cd_produto), name: p.nm_produto, productUrl: site + '/' + p.url_produto,
+      }));
+    }
+    cards.push(...batch.slice(skip, skip + limit - cards.length));
+    if (batch.length < pageSize || (total !== null && upstreamPage * pageSize >= total)) break;
+    skip = 0;
+    upstreamPage++;
   }
-  cards=cards.slice(0,limit);
   if (!cards.length) return [];
   const prices=await post('/pegar/preco',cards.map(c=>['produtos_ids[]',c.sku]));
   if (!prices.precos) throw new Error('Price response unavailable');
