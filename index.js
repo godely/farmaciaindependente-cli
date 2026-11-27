@@ -1,3 +1,5 @@
+import { medicationCatalog, verifiedRow } from 'drogasil-cli/medication-catalog';
+import { retailer as ingredientCatalog } from 'drogariasaopaulo-cli';
 import { load } from 'cheerio';
 import { validGtin } from 'paguemenos-cli/vtex';
 const site = 'https://www.farmaciasindependente.com.br';
@@ -44,7 +46,7 @@ export function parseCards(html) {
     return {sku:card.attr('data-produto_id'), name:card.find('[data-target="nome_produto"]').text().trim(),productUrl:site+link};
   }).get();
 }
-async function search(query, page=1, limit=20) {
+async function search(query, page=1, limit=20, verify) {
   if (!Number.isInteger(page) || page<1 || !Number.isInteger(limit) || limit<1 || limit>50) throw new Error('Invalid page or limit');
   const term=query.trim().replace(/\s+/g,'-');
   const {html,post}=await session('/pesquisa/'+encodeURIComponent(term));
@@ -55,8 +57,8 @@ async function search(query, page=1, limit=20) {
   const total = totalText ? Number(totalText) : null;
   const offset = (page - 1) * limit;
   if (!Number.isSafeInteger(offset) || (total !== null && offset >= total)) return [];
-  let upstreamPage = Math.floor(offset / pageSize) + 1;
-  let skip = offset % pageSize;
+  let upstreamPage = verify ? 1 : Math.floor(offset / pageSize) + 1;
+  let skip = verify ? offset : offset % pageSize;
   const cards = [];
   while (cards.length < limit) {
     let batch = first;
@@ -70,9 +72,10 @@ async function search(query, page=1, limit=20) {
         sku: String(p.cd_produto), name: p.nm_produto, productUrl: site + '/' + p.url_produto,
       }));
     }
-    cards.push(...batch.slice(skip, skip + limit - cards.length));
+    const matches = verify ? batch.map(verify).filter(Boolean) : batch;
+    cards.push(...matches.slice(skip, skip + limit - cards.length));
+    skip = Math.max(0, skip - matches.length);
     if (batch.length < pageSize || (total !== null && upstreamPage * pageSize >= total)) break;
-    skip = 0;
     upstreamPage++;
   }
   if (!cards.length) return [];
@@ -139,4 +142,54 @@ async function local(row, zipcode, quantity=1) {
   return {...row,branches,methods:[],localStatus:branches.length?'city_stock_reported':'unverified',
     requestedQuantity:quantity,quantityVerified:false,observedAt:new Date().toISOString()};
 }
-export const retailer={name,site,search,product,byGtin,local,stores,serves};
+// A brand on a card is a discovery hint only. Join the two independent
+// product records by a validated barcode before borrowing composition.
+export function verifyBarcode(card, references, intent) {
+  if (!validGtin(card.gtin ?? '')) return;
+  const reference = references.get(card.gtin);
+  if (!reference) return;
+  return verifiedRow(card, intent, {
+    ingredients:reference.activeIngredients,
+    evidence:{source:'matched_gtin',retailer:ingredientCatalog.name,sku:reference.sku,gtin:card.gtin},
+  });
+}
+async function searchVerified(intent,page,limit) {
+  const query = intent.kind === 'text' ? [intent.name,intent.suffix].filter(Boolean).join(' ') : intent.name;
+  let found = false;
+  const direct = await search(query,page,limit,card=>{
+    const match=verifiedRow(card,intent);
+    if (match) found=true;
+    return match;
+  });
+  if (found || intent.kind !== 'ingredient') return direct;
+
+  const references=new Map(), visitedTerms=new Set(), matches=new Map();
+  const fullQuery=[intent.name,intent.suffix].filter(Boolean).join(' ');
+  // One catalog page at a time. Only verified retailer records can enter the
+  // reference map. The local lookup uses this store's own pages, SKUs and offers.
+  for (let n=1; ; n++) {
+    const batch=await ingredientCatalog.search(fullQuery,n,50);
+    for (const row of batch) {
+      if (row.ingredientEvidence?.source==='retailer_field' && validGtin(row.gtin??'')) references.set(row.gtin,row);
+    }
+    if (batch.length<50) break;
+  }
+  for (const ref of references.values()) {
+    const term=ref.name.split(/\s/)[0];
+    if (!term || visitedTerms.has(term)) continue;
+    visitedTerms.add(term);
+    for (let n=1; ; n++) {
+      const cards=await search(term,n,30,card=>verifiedRow(card,{kind:'brand',name:term,suffix:''}));
+      for (const card of cards) {
+        if (matches.has(card.sku)) continue;
+        const record=await details(card);
+        const match=record && verifyBarcode(record,references,intent);
+        if (match) matches.set(card.sku,match);
+        if (matches.size>=page*limit) return [...matches.values()].slice((page-1)*limit);
+      }
+      if (cards.length<30) break;
+    }
+  }
+  return [...matches.values()].slice((page-1)*limit,page*limit);
+}
+export const retailer=medicationCatalog({name,site,search,product,byGtin,local,stores,serves},{searchVerified});
