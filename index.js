@@ -46,7 +46,7 @@ export function parseCards(html) {
     return {sku:card.attr('data-produto_id'), name:card.find('[data-target="nome_produto"]').text().trim(),productUrl:site+link};
   }).get();
 }
-async function search(query, page=1, limit=20, verify, verifyEarlier=false) {
+async function search(query, page=1, limit=20, verify, verifyEarlier=false, withPrices=true) {
   if (!Number.isInteger(page) || page<1 || !Number.isInteger(limit) || limit<1 || limit>50) throw new Error('Invalid page or limit');
   const term=query.trim().replace(/\s+/g,'-');
   const {html,post}=await session('/pesquisa/'+encodeURIComponent(term));
@@ -80,6 +80,7 @@ async function search(query, page=1, limit=20, verify, verifyEarlier=false) {
     upstreamPage++;
   }
   if (!cards.length) return [];
+  if (!withPrices) return cards;
   const prices=await post('/pegar/preco',cards.map(c=>['produtos_ids[]',c.sku]));
   if (!prices.precos) throw new Error('Price response unavailable');
   return cards.map(card=>offer(card,prices.precos[card.sku]));
@@ -91,9 +92,9 @@ async function details(card) {
   if (!id || id[1]!==card.sku) return null;
   return {...card,gtin:validGtin(id[2])?id[2]:null,itemName:card.name};
 }
-async function product(sku) {
+async function product(sku, withPrices=true) {
   if (!/^\d+$/.test(sku)) throw new Error('Expected a numeric SKU');
-  const card=(await search(sku)).find(c=>c.sku===String(sku));
+  const card=(await search(sku,1,20,undefined,false,withPrices)).find(c=>c.sku===String(sku));
   if (!card) return [];
   const item=await details(card);
   return item?[item]:[];
@@ -154,14 +155,14 @@ export function verifyBarcode(card, references, intent) {
     evidence:{source:'matched_gtin',retailer:ingredientCatalog.name,sku:reference.sku,gtin:card.gtin},
   });
 }
-async function searchVerified(intent,page,limit) {
+async function searchVerified(intent,page,limit,withPrices=true) {
   const query = intent.kind === 'text' ? [intent.name,intent.suffix].filter(Boolean).join(' ') : intent.name;
   let found = false;
   const direct = await search(query,page,limit,card=>{
     const match=verifiedRow(card,intent);
     if (match) found=true;
     return match;
-  }, intent.kind === 'ingredient');
+  }, intent.kind === 'ingredient', withPrices);
   if (found || intent.kind !== 'ingredient') return direct;
 
   const references=new Map(), visitedTerms=new Set(), matches=new Map();
@@ -180,7 +181,7 @@ async function searchVerified(intent,page,limit) {
     if (!term || visitedTerms.has(term)) continue;
     visitedTerms.add(term);
     for (let n=1; ; n++) {
-      const cards=await search(term,n,30,card=>verifiedRow(card,{kind:'brand',name:term,suffix:''}));
+      const cards=await search(term,n,30,card=>verifiedRow(card,{kind:'brand',name:term,suffix:''}),false,withPrices);
       for (const card of cards) {
         if (matches.has(card.sku)) continue;
         const record=await details(card);
@@ -194,3 +195,11 @@ async function searchVerified(intent,page,limit) {
   return [...matches.values()].slice((page-1)*limit,page*limit);
 }
 export const retailer=medicationCatalog({name,site,search,product,byGtin,local,stores,serves},{searchVerified});
+
+
+const factsCatalog = medicationCatalog({search:(q,page,limit)=>search(q,page,limit,undefined,false,false)}, {
+  searchVerified:(intent,page,limit)=>searchVerified(intent,page,limit,false),
+});
+// Fact inquiries read the catalog without calling its price or stock service.
+retailer.facts = async (query,page=1,limit=20) => /^\d+$/.test(query)
+  ? product(query,false) : factsCatalog.search(query,page,limit);

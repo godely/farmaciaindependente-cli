@@ -47,3 +47,19 @@ test('an exhausted ingredient page cannot start a different barcode search', asy
   });
   assert.deepEqual(await retailer.search('paracetamol',2,10),[]);
 });
+
+test('facts for a name or local SKU never request prices or stock', async t=>{
+  t.mock.method(globalThis,'fetch',async url=>{
+    const path=new URL(url).pathname;
+    if(path === '/pesquisa/123' || path === '/pesquisa/paracetamol') return new Response(
+      '<b id="quantidade-busca">1</b><div id="search-produtos"><div class="produto" data-produto_id="123"><a href="/local"></a><span data-target="nome_produto">Paracetamol 500mg</span></div></div>');
+    if(path === '/local') return new Response('<p>Código: 123 | EAN: 7891058002602</p>');
+    throw Error('Unexpected '+path);
+  });
+  for (const q of ['123','paracetamol']) {
+    const [p]=await retailer.facts(q);
+    assert.equal(p.sku,'123');
+    assert.equal(p.currentPrice,undefined);
+    assert.equal(p.branches,undefined);
+  }
+});
